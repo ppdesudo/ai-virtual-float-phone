@@ -999,16 +999,18 @@
 }
 
 /* ── 侧边滑动返回：跟手反馈 ──
-   从屏幕左缘右滑时，当前 APP 内容随手指淡出、壁纸透出，
-   到阈值后 JS 提交关闭（松手未达阈值则属性移除、原样恢复）。 */
-.phone-shell[data-app-edge-swiping] .phone-workspace {
-  opacity: calc(1 - var(--app-edge-swipe-opacity, 0));
-  transition: opacity 0.05s linear;
+   从屏幕左缘右滑时，当前 APP 内容随手指淡出并右移、壁纸透出；
+   到阈值后 JS 提交返回（松手未达阈值则属性移除、原样恢复）。 */
+.phone-shell[data-edge-back] .phone-workspace {
+  opacity: calc(1 - var(--edge-back-progress, 0));
+  transform: translate3d(calc(var(--edge-back-progress, 0) * 42px), 0, 0);
+  transition: none;
 }
-.phone-shell[data-app-edge-swiping] .phone-wallpaper {
+.phone-shell[data-edge-back] .phone-wallpaper {
   opacity: 1 !important;
   transition-duration: 0s !important;
 }
+
 
 /* ── Notice toast ── */
 
