@@ -3803,6 +3803,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       s.lastDx = dx;
       const el = s.layer;
       if (!el) return true;
+      // 只有 push 档有跟手视觉：它底下摆着已挂载的上一层，推走才有东西可露。
+      // exit / fade 档底下没有下一层，跟手位移只会把壁纸/空容器亮出来，
+      // 索然无味还容易被误读成"卡住了"——这两档不做跟手动画，松手直接切。
+      if (s.mode !== "push") return true;
       if (dx <= 0) {
         clearFeedback();
         return true;
@@ -3835,28 +3839,27 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 按比例而非固定像素，各种屏宽手感一致。
       const width = shell.getBoundingClientRect().width || 1;
       const commit = finalDx / width > EDGE_BACK_COMMIT_RATIO;
-      // exit 档（退出 APP）不能久等：桌面图标/dock 只在 activeApp 为空时才渲染，
-      // 动画期间底下没有桌面可露、只有壁纸，拖长了就是干看一片纯色（用户反馈"一片蓝"）。
-      // 所以尽快切过去，改由桌面自己淡入登场（见下方 desktopEntering）。
-      const settleMs = commit && s.mode === "exit" ? EDGE_BACK_EXIT_SETTLE_MS : EDGE_BACK_SETTLE_MS;
-      const exiting = commit && s.mode === "exit";
+      // ── exit / fade 档：立刻切换，不排动画 ──
+      // 这两档底下都没有"已经挂载好的下一层"可露：桌面图标要等 activeApp 清空才渲染，
+      // APP 内切 tab 是同容器换内容。只要先播动画、等动画结束再切 state，
+      // 那段时间必然只有壁纸/空容器可看（用户反馈"一片蓝，看不到应用"）——
+      // 把时长从 220ms 调到 120ms 也只是缩短空窗，性质不变。
+      // 左上角返回按钮一直观感正常，它就是一行 setActiveApp(null)、零动画；
+      // 这两档照它做即可，别自作聪明。
+      if (commit && s.mode !== "push") {
+        clearFeedback();
+        s.layer = null;
+        s.mode = "exit";
+        if (!dispatchEdgeBack()) setActiveApp(null);
+        try { navigator.vibrate?.(10); } catch { /* 不支持振动就算了 */ }
+        return;
+      }
       el.dataset.edgeBackSettling = "1";
-      // exit 档不推到屏幕外（推出去也只是露壁纸），只轻微位移+淡出，把舞台交给桌面
-      el.style.setProperty("--edge-back-progress", commit ? (exiting ? "0.18" : "1") : "0");
+      el.style.setProperty("--edge-back-progress", commit ? "1" : "0");
       window.setTimeout(() => {
         if (commit) {
-          // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
-          // 没人认领才关掉整个 APP 回桌面。
-          if (!dispatchEdgeBack()) {
-            setActiveApp(null);
-            // 桌面这一帧才开始渲染，给它一个淡入+微缩放的入场，
-            // 避免"啪"地硬切（CSS 里 .phone-workspace[data-desktop-entering]）
-            const ws = shell.querySelector<HTMLElement>(".phone-workspace");
-            if (ws) {
-              ws.dataset.desktopEntering = "1";
-              window.setTimeout(() => { delete ws.dataset.desktopEntering; }, 260);
-            }
-          }
+          // push 档：这一层已滑出屏幕外才切状态，观感就是"它被推走、露出上一层"
+          if (!dispatchEdgeBack()) setActiveApp(null);
         }
         // 位移必须在状态切换后再清：先清会让这一层瞬间弹回原位闪一下
         delete el.dataset.edgeBackSettling;
@@ -3865,7 +3868,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
         delete shell.dataset.edgeBack;
         edgeBackRef.current.layer = null;
         edgeBackRef.current.mode = "exit";
-      }, settleMs);
+      }, EDGE_BACK_SETTLE_MS);
       if (commit) {
         try { navigator.vibrate?.(10); } catch { /* 不支持振动就算了 */ }
       }
@@ -3942,7 +3945,12 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   }, []);
 
   const handleSwipeStart = useCallback((e: React.PointerEvent) => {
-    if (activeApp) return;
+    if (activeApp) {
+      // 侧边滑动返回已在壳节点 capture 阶段用 touch 事件采集，
+      // React onPointerDown 靠冒泡收不到，这里直接 return 不处理，
+      // 避免和返回按钮的逻辑冲突。
+      return;
+    }
     if (editMode && editDragRef.current) return;
     // Track tap on empty for "exit edit" detection
     if (editMode) {

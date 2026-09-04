@@ -1001,11 +1001,10 @@
 /* ── 侧边滑动返回：跟手反馈 ──
    --edge-back-progress 为 0~1 行程比例（= 手指位移 / 屏宽），JS 逐帧写入，
    所以位移 1:1 跟手，中途可停、可往回拖。
-   data-edge-back-layer 的值就是动效模式，由 JS 起手探询后写入。选哪种模式的
-   判据只有一条：底下有没有"已经挂载好的下一层"可露。
-   - push：有（聊天室之下就摆着会话列表）→ 整页推出屏幕，真·侧滑返回；
-   - exit / fade：没有 → 只小幅位移 + 淡出。桌面图标要等 activeApp 清空才渲染，
-     APP 内切 tab 更是同容器换内容，这两种情况把页面推出去，底下只有壁纸。 */
+   本文件只负责 push 一档的跟手动画（data-edge-back-layer="push"）。
+   判据只有一条：底下有没有"已经挂载好的下一层"可露。有（聊天室之下就摆着会话
+   列表）才值得推——推走上层，下层自然露出。没有的话（退出 APP、APP 内切 tab）
+   一律由 JS 松手时直接切状态、零动画，与左上角返回按钮行为一致。 */
 .phone-shell[data-edge-back] [data-edge-back-layer] {
   /* 跟手阶段不能有过渡，否则位移滞后于手指、手感发黏 */
   transition: none;
@@ -1019,31 +1018,15 @@
   /* 被推走时露出下层，自身必须不透明，否则两层叠着看会串影 */
   background: var(--c-app-bg, var(--c-panel, #fff));
 }
-/* exit（退出 APP）与 fade（APP 内切 state 换页）都没有"已挂载的下一层"可露：
-   exit 的桌面要等 activeApp 清空才渲染，fade 是同容器换内容。
-   两者一律只做小幅位移 + 淡出，绝不整页推出去——推出去底下只有壁纸，
-   就是用户看到的"一片蓝"。 */
-.phone-shell[data-edge-back] [data-edge-back-layer="exit"],
-.phone-shell[data-edge-back] [data-edge-back-layer="fade"] {
-  transform: translate3d(calc(var(--edge-back-progress, 0) * 26px), 0, 0);
-  opacity: calc(1 - var(--edge-back-progress, 0) * 0.42);
-}
+/* exit（退出 APP）与 fade（APP 内切 state 换页）不在这里出现：
+   它们底下没有"已挂载的下一层"可露，任何跟手位移都只会把壁纸/空容器亮出来
+   （用户反馈的"一片蓝，看不到应用"）。这两档由 JS 在松手时直接切状态、零动画，
+   与左上角返回按钮的行为完全一致。 */
 /* 松手阶段：补一段过渡，平滑滑到底或滑回原位（消除"半途瞬移"）。
    JS 在动画时长后清掉标记。 */
 .phone-shell[data-edge-back] [data-edge-back-layer][data-edge-back-settling] {
   transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1),
               opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1);
-}
-/* 退出 APP 后桌面（图标/dock）这一帧才开始渲染，给它一个淡入+微缩放的入场，
-   避免"啪"地硬切。JS 在动画时长后清掉标记（见 desktop-shell 的 desktopEntering）。
-   注意别用 transform 缩放整个工作区：桌面的长按拖拽要按屏幕坐标算命中，
-   动画期间的缩放会让落点算错，所以只缩放不影响布局的视觉层。 */
-.phone-workspace[data-desktop-entering] {
-  animation: desktop-enter 0.26s cubic-bezier(0.22, 1, 0.36, 1);
-}
-@keyframes desktop-enter {
-  from { opacity: 0; }
-  to { opacity: 1; }
 }
 
 
