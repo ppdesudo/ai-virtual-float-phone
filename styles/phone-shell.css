@@ -1002,9 +1002,16 @@
    从屏幕左缘右滑时，当前 APP 内容随手指淡出并右移、壁纸透出；
    到阈值后 JS 提交返回（松手未达阈值则属性移除、原样恢复）。 */
 .phone-shell[data-edge-back] .phone-workspace {
-  opacity: calc(1 - var(--edge-back-progress, 0));
-  transform: translate3d(calc(var(--edge-back-progress, 0) * 42px), 0, 0);
+  /* 跟手阶段：淡出 + 右移，1:1 跟随手指，不加过渡 */
+  opacity: calc(1 - var(--edge-back-progress, 0) * 0.65);
+  transform: translate3d(calc(var(--edge-back-progress, 0) * 88px), 0, 0);
   transition: none;
+}
+/* 松手阶段（settling）：无论提交返回还是弹回原位，都补一段过渡，
+   避免"半途瞬移"。JS 在动画时长后清理这两个属性。 */
+.phone-shell[data-edge-back][data-edge-back-settling] .phone-workspace {
+  transition: transform 0.19s cubic-bezier(0.22, 1, 0.36, 1),
+              opacity 0.19s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .phone-shell[data-edge-back] .phone-wallpaper {
   opacity: 1 !important;

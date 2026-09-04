@@ -1180,7 +1180,9 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
     activeId: number | null;
     locked: boolean;
     fired: boolean;
-  }>({ startX: 0, startY: 0, activeId: null, locked: false, fired: false });
+    /** 最近一次跟手的横向位移：松手时据此判定提交返回还是弹回 */
+    lastDx: number;
+  }>({ startX: 0, startY: 0, activeId: null, locked: false, fired: false, lastDx: 0 });
 
   // ── Edit mode (long-press drag) ──
   const [editMode, setEditMode] = useState(false);
@@ -3720,6 +3722,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       s.activeId = null;
       s.locked = false;
       s.fired = false;
+      s.lastDx = 0;
       clearFeedback();
     };
 
@@ -3734,11 +3737,14 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       s.activeId = id;
       s.locked = false;
       s.fired = false;
+      s.lastDx = 0;
     };
 
     /**
      * 移动。返回 true = 已锁定为返回手势，调用方应 preventDefault()
      * 把这次触摸从浏览器的滚动手里抢下来（否则浏览器会发 touchcancel 掐断手势）。
+     * 注意：这里只跟手，绝不触发返回——返回要等松手才提交（见 end），
+     * 否则一滑过阈值就"咣"地返回，根本没法停顿观察（用户反馈）。
      */
     const move = (id: number, x: number, y: number): boolean => {
       const s = edgeBackRef.current;
@@ -3761,28 +3767,60 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
         s.locked = true;
       }
 
+      s.lastDx = dx;
       if (dx <= 0) {
         clearFeedback();
         return true;
       }
-      // 跟手淡出反馈
+      // 跟手淡出反馈：移动中只更新进度，到了阈值也先不触发
       shell.dataset.edgeBack = "1";
       shell.style.setProperty("--edge-back-progress", String(Math.min(dx / EDGE_BACK_FADE_TRAVEL, 0.85)));
-
-      if (dx > EDGE_BACK_THRESHOLD) {
-        s.fired = true;
-        clearFeedback();
-        // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
-        // 没人认领才关掉整个 APP 回桌面。
-        if (!dispatchEdgeBack()) {
-          setActiveApp(null);
-        }
-        try { navigator.vibrate?.(12); } catch { /* 不支持振动就算了 */ }
-      }
       return true;
     };
 
+    /** 松手：根据最终位移决定提交返回还是弹回原位 */
     const end = (id: number) => {
+      const s = edgeBackRef.current;
+      if (s.activeId !== id) return;
+      // 先取出判定所需的量，再清理状态（reset 会把它们归零）
+      const wasLocked = s.locked;
+      const finalDx = s.lastDx;
+      if (wasLocked && finalDx > EDGE_BACK_THRESHOLD) {
+        // 够阈值 → 提交返回。先让内容滑到底再切换，避免"半途瞬移"的割裂感
+        shell.dataset.edgeBack = "1";
+        shell.dataset.edgeBackSettling = "1";
+        shell.style.setProperty("--edge-back-progress", "1");
+        s.activeId = null;
+        s.locked = false;
+        s.lastDx = 0;
+        window.setTimeout(() => {
+          // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
+          // 没人认领才关掉整个 APP 回桌面。
+          if (!dispatchEdgeBack()) setActiveApp(null);
+          delete shell.dataset.edgeBackSettling;
+          clearFeedback();
+        }, 170);
+        try { navigator.vibrate?.(12); } catch { /* 不支持振动就算了 */ }
+        return;
+      }
+      // 不够阈值 → 平滑弹回原位，页面留在当前层
+      if (wasLocked) {
+        shell.dataset.edgeBackSettling = "1";
+        shell.style.setProperty("--edge-back-progress", "0");
+        window.setTimeout(() => {
+          delete shell.dataset.edgeBackSettling;
+          clearFeedback();
+        }, 200);
+        s.activeId = null;
+        s.locked = false;
+        s.lastDx = 0;
+        return;
+      }
+      reset();
+    };
+
+    /** 触摸被浏览器接管（变滚动/被系统手势抢走）：只弹回，不提交返回 */
+    const cancel = (id: number) => {
       if (edgeBackRef.current.activeId !== id) return;
       reset();
     };
@@ -3817,6 +3855,14 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       if (!stillDown) end(s.activeId);
     };
 
+    // 触摸被浏览器/系统抢走：只弹回，不提交返回
+    const onTouchCancel = (e: TouchEvent) => {
+      const s = edgeBackRef.current;
+      if (s.activeId === null) return;
+      const stillDown = Array.from(e.touches).some(touch => touch.identifier === s.activeId);
+      if (!stillDown) cancel(s.activeId);
+    };
+
     // ── 鼠标（桌面浏览器调试用）──
     const onMouseDown = (e: MouseEvent) => begin(-1, e.clientX, e.clientY);
     const onMouseMove = (e: MouseEvent) => { move(-1, e.clientX, e.clientY); };
@@ -3827,7 +3873,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     shell.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
     shell.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
     shell.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
-    shell.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: true });
+    shell.addEventListener("touchcancel", onTouchCancel, { capture: true, passive: true });
     shell.addEventListener("mousedown", onMouseDown, { capture: true });
     shell.addEventListener("mousemove", onMouseMove, { capture: true });
     shell.addEventListener("mouseup", onMouseUp, { capture: true });
@@ -3835,7 +3881,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       shell.removeEventListener("touchstart", onTouchStart, { capture: true });
       shell.removeEventListener("touchmove", onTouchMove, { capture: true });
       shell.removeEventListener("touchend", onTouchEnd, { capture: true });
-      shell.removeEventListener("touchcancel", onTouchEnd, { capture: true });
+      shell.removeEventListener("touchcancel", onTouchCancel, { capture: true });
       shell.removeEventListener("mousedown", onMouseDown, { capture: true });
       shell.removeEventListener("mousemove", onMouseMove, { capture: true });
       shell.removeEventListener("mouseup", onMouseUp, { capture: true });
