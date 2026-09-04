@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useState, useEffect, useRef } from "react";
+import { subscribeEdgeBack } from "@/lib/edge-back-events";
 import { ChatMessageList } from "./chat-message-list";
 import { ChatContactsList } from "./chat-contacts-list";
 import { MomentsFeed } from "./moments-feed";
@@ -231,6 +232,15 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
     }, []);
 
     // Wait for IndexedDB hydration before rendering
+    // 侧边滑动返回：按层级逐级回退，全退完了才交还给壳去关 APP。
+    // 返回 true = 本层已消费掉这次返回；返回 false = 本 APP 已在最外层。
+    useEffect(() => subscribeEdgeBack(() => {
+        if (activeMascot) { setActiveMascot(false); return true; }
+        if (activeSession) { setActiveSession(null); return true; }
+        if (activeTab !== "messages") { setActiveTab("messages"); return true; }
+        return false;
+    }), [activeMascot, activeSession, activeTab]);
+
     if (!dbReady) return null;
 
     return (

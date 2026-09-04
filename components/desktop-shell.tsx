@@ -3,6 +3,7 @@
 import { Component, memo, useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
 
 import { updateStatusBarTone } from "@/lib/bg-tone";
+import { dispatchEdgeBack } from "@/lib/edge-back-events";
 import { startDiaryEntryTimerService, stopDiaryEntryTimerService } from "@/lib/diary-entry-timer-service";
 import { startFollowUpService, stopFollowUpService } from "@/lib/follow-up-service";
 import { startMomentsService, stopMomentsService } from "@/lib/moments-engine";
@@ -155,6 +156,14 @@ const DOCK_PAGE_KEY = "dock" as const;
 type DragPageKey = DesktopPageKey | typeof DOCK_PAGE_KEY;
 const SWIPE_THRESHOLD_RATIO = 0.2;
 const SWIPE_MIN_THRESHOLD = 60;
+// ── 侧边滑动返回 ──
+// 起手判定区：屏幕左缘往里这么宽的一条，只有在这里按下才算返回手势，
+// 中间区域完全不受影响（不抢聊天列表左滑删除、图片横滑、横向滚动等）。
+const EDGE_BACK_ZONE = 24;
+// 触发阈值：横向要滑过这么多像素才真正返回，避免轻碰误退。
+const EDGE_BACK_THRESHOLD = 45;
+// 跟手淡出的行程：位移/该值 = 淡出比例（视觉反馈用，不影响触发判定）。
+const EDGE_BACK_FADE_TRAVEL = 160;
 
 function parseColorAlpha(value: string): { hex: string; alpha: number } {
   const rgbaMatch = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
@@ -1162,6 +1171,15 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
     pointerId: number | null;
   }>({ startX: 0, startY: 0, deltaX: 0, locked: null, pointerId: null });
   const swipeLayerRef = useRef<HTMLDivElement | null>(null);
+
+  // ── 侧边滑动返回：手势状态（capture 阶段原生监听，见下方 useEffect）──
+  const edgeBackRef = useRef<{
+    startX: number;
+    startY: number;
+    pointerId: number | null;
+    locked: boolean;
+    fired: boolean;
+  }>({ startX: 0, startY: 0, pointerId: null, locked: false, fired: false });
 
   // ── Edit mode (long-press drag) ──
   const [editMode, setEditMode] = useState(false);
@@ -3677,6 +3695,102 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   // re-render. Releasing sets it back to 0 and the CSS transition settles the page.
   const setSwipeDrag = useCallback((px: number) => {
     swipeLayerRef.current?.style.setProperty("--swipe-drag", `${px}px`);
+  }, []);
+
+  // ── 全局侧边滑动返回 ──
+  // 必须用 capture 阶段的原生监听挂在壳节点上：APP 内容都在子树里，各 APP 自己的
+  // 滚动容器/手势处理常常 stopPropagation，靠冒泡（React onPointerDown）根本收不到
+  // 事件，手势会静默失效。capture 早于目标与冒泡执行，谁也拦不住。
+  // 只在 APP 打开时生效；桌面态的左右滑仍归翻页逻辑，互不干扰。
+  useEffect(() => {
+    const shell = shellRef.current;
+    if (!shell) return;
+
+    const clearFeedback = () => {
+      delete shell.dataset.edgeBack;
+      shell.style.removeProperty("--edge-back-progress");
+    };
+
+    const reset = () => {
+      const s = edgeBackRef.current;
+      s.pointerId = null;
+      s.locked = false;
+      s.fired = false;
+      clearFeedback();
+    };
+
+    const onDown = (e: PointerEvent) => {
+      if (!activeAppRef.current) return;
+      // 起手必须落在左缘判定区内
+      const rect = shell.getBoundingClientRect();
+      if (e.clientX - rect.left > EDGE_BACK_ZONE) return;
+      const s = edgeBackRef.current;
+      s.startX = e.clientX;
+      s.startY = e.clientY;
+      s.pointerId = e.pointerId;
+      s.locked = false;
+      s.fired = false;
+    };
+
+    const onMove = (e: PointerEvent) => {
+      const s = edgeBackRef.current;
+      if (s.pointerId === null || s.pointerId !== e.pointerId || s.fired) return;
+      const dx = e.clientX - s.startX;
+      const dy = e.clientY - s.startY;
+
+      if (!s.locked) {
+        // 竖向意图（页面滚动）优先：直接放弃，绝不劫持滚动
+        if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+          reset();
+          return;
+        }
+        if (Math.abs(dx) < 8) return;
+        // 左滑（dx<0）不是返回手势，让给列表左滑等既有交互
+        if (dx < 0) {
+          reset();
+          return;
+        }
+        s.locked = true;
+      }
+
+      if (dx <= 0) {
+        clearFeedback();
+        return;
+      }
+      // 跟手淡出反馈
+      shell.dataset.edgeBack = "1";
+      shell.style.setProperty("--edge-back-progress", String(Math.min(dx / EDGE_BACK_FADE_TRAVEL, 0.85)));
+
+      if (dx > EDGE_BACK_THRESHOLD) {
+        s.fired = true;
+        clearFeedback();
+        // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
+        // 没人认领才关掉整个 APP 回桌面。
+        if (!dispatchEdgeBack()) {
+          setActiveApp(null);
+        }
+        try { navigator.vibrate?.(12); } catch { /* 不支持振动就算了 */ }
+      }
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const s = edgeBackRef.current;
+      if (s.pointerId !== e.pointerId) return;
+      reset();
+    };
+
+    // capture: true 是这套手势能全局生效的关键，勿改
+    shell.addEventListener("pointerdown", onDown, { capture: true });
+    shell.addEventListener("pointermove", onMove, { capture: true });
+    shell.addEventListener("pointerup", onUp, { capture: true });
+    shell.addEventListener("pointercancel", onUp, { capture: true });
+    return () => {
+      shell.removeEventListener("pointerdown", onDown, { capture: true });
+      shell.removeEventListener("pointermove", onMove, { capture: true });
+      shell.removeEventListener("pointerup", onUp, { capture: true });
+      shell.removeEventListener("pointercancel", onUp, { capture: true });
+      clearFeedback();
+    };
   }, []);
 
   const handleSwipeStart = useCallback((e: React.PointerEvent) => {
