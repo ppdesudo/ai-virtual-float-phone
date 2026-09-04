@@ -167,6 +167,9 @@ const EDGE_BACK_THRESHOLD = 12;
 const EDGE_BACK_COMMIT_RATIO = 0.32;
 // 松手后滑到底/滑回原位的动画时长，需与 CSS 里 settling 的过渡时长一致。
 const EDGE_BACK_SETTLE_MS = 220;
+// 退出 APP 那一档单独用更短的时长：桌面（图标/dock）只在 activeApp 为空时才渲染，
+// 动画期间底下并没有桌面可露，拖长了就是干看一片壁纸。尽快切过去反而干净。
+const EDGE_BACK_EXIT_SETTLE_MS = 120;
 
 function parseColorAlpha(value: string): { hex: string; alpha: number } {
   const rgbaMatch = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
@@ -3832,14 +3835,28 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 按比例而非固定像素，各种屏宽手感一致。
       const width = shell.getBoundingClientRect().width || 1;
       const commit = finalDx / width > EDGE_BACK_COMMIT_RATIO;
+      // exit 档（退出 APP）不能久等：桌面图标/dock 只在 activeApp 为空时才渲染，
+      // 动画期间底下没有桌面可露、只有壁纸，拖长了就是干看一片纯色（用户反馈"一片蓝"）。
+      // 所以尽快切过去，改由桌面自己淡入登场（见下方 desktopEntering）。
+      const settleMs = commit && s.mode === "exit" ? EDGE_BACK_EXIT_SETTLE_MS : EDGE_BACK_SETTLE_MS;
+      const exiting = commit && s.mode === "exit";
       el.dataset.edgeBackSettling = "1";
-      el.style.setProperty("--edge-back-progress", commit ? "1" : "0");
+      // exit 档不推到屏幕外（推出去也只是露壁纸），只轻微位移+淡出，把舞台交给桌面
+      el.style.setProperty("--edge-back-progress", commit ? (exiting ? "0.18" : "1") : "0");
       window.setTimeout(() => {
         if (commit) {
-          // 这一层已经滑出屏幕外了才真正切换状态，观感就是"它被推走、露出上一层"
           // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
           // 没人认领才关掉整个 APP 回桌面。
-          if (!dispatchEdgeBack()) setActiveApp(null);
+          if (!dispatchEdgeBack()) {
+            setActiveApp(null);
+            // 桌面这一帧才开始渲染，给它一个淡入+微缩放的入场，
+            // 避免"啪"地硬切（CSS 里 .phone-workspace[data-desktop-entering]）
+            const ws = shell.querySelector<HTMLElement>(".phone-workspace");
+            if (ws) {
+              ws.dataset.desktopEntering = "1";
+              window.setTimeout(() => { delete ws.dataset.desktopEntering; }, 260);
+            }
+          }
         }
         // 位移必须在状态切换后再清：先清会让这一层瞬间弹回原位闪一下
         delete el.dataset.edgeBackSettling;
@@ -3848,7 +3865,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
         delete shell.dataset.edgeBack;
         edgeBackRef.current.layer = null;
         edgeBackRef.current.mode = "exit";
-      }, EDGE_BACK_SETTLE_MS);
+      }, settleMs);
       if (commit) {
         try { navigator.vibrate?.(10); } catch { /* 不支持振动就算了 */ }
       }
