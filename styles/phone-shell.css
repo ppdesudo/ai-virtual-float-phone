@@ -1000,23 +1000,30 @@
 
 /* ── 侧边滑动返回：跟手反馈 ──
    仿 iOS/微信：当前这一层整页跟着手指横向滑走、露出底下一层。
-   --edge-back-progress 为 0~1 的行程比例（= 手指位移 / 屏宽），由 JS 逐帧写入，
-   所以位移是 1:1 跟手的，中途可以停、可以往回拖。松手后由 JS 补 settling 过渡
-   决定滑到底（提交返回）还是滑回去（放弃）。 */
-.phone-shell[data-edge-back] .phone-workspace {
+   位移施加在 [data-edge-back-layer] 这个"被推走的层"上——它由 JS 起手时探询得来：
+   APP 内有上层（如聊天室 .chat-room-layer）就只推那一层，它底下已挂载的上一层
+   （会话列表）便自然露出；无人认领才兜底推整个 .phone-workspace（底下是壁纸，
+   语义即"退出 APP 回桌面"）。
+   ——早先一律推 .phone-workspace，而"上一层"也在工作区内部、被一起推走了，
+   露出来的只有壁纸，观感根本不是侧滑返回。
+   --edge-back-progress 为 0~1 行程比例（= 手指位移 / 屏宽），JS 逐帧写入，
+   所以位移 1:1 跟手，中途可停、可往回拖。 */
+.phone-shell[data-edge-back] [data-edge-back-layer] {
   transform: translate3d(calc(var(--edge-back-progress, 0) * 100%), 0, 0);
   /* 跟手阶段不能有过渡，否则位移滞后于手指、手感发黏 */
   transition: none;
   /* 滑走的那一层带右侧投影，和底下一层拉开层次（iOS 同款做法） */
   box-shadow: -14px 0 34px rgba(0, 0, 0, calc(0.26 * (1 - var(--edge-back-progress, 0))));
   will-change: transform;
+  /* 被推走时露出下层，自身必须不透明，否则两层叠着看会串影 */
+  background: var(--c-app-bg, var(--c-panel, #fff));
 }
-/* 松手阶段：补一段过渡，让它平滑滑到底或滑回原位（消除"半途瞬移"）。
-   JS 在动画时长后清掉这两个标记。 */
-.phone-shell[data-edge-back][data-edge-back-settling] .phone-workspace {
+/* 松手阶段：补一段过渡，平滑滑到底或滑回原位（消除"半途瞬移"）。
+   JS 在动画时长后清掉标记。 */
+.phone-shell[data-edge-back] [data-edge-back-layer][data-edge-back-settling] {
   transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
-/* 滑动期间壁纸要透出来当"底下一层"，否则右移后是一片空白 */
+/* 兜底推整个工作区（= 退出 APP）时，壁纸要透出来当"底下一层" */
 .phone-shell[data-edge-back] .phone-wallpaper {
   opacity: 1 !important;
   transition-duration: 0s !important;

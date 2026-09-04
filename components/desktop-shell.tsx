@@ -3,7 +3,7 @@
 import { Component, memo, useCallback, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
 
 import { updateStatusBarTone } from "@/lib/bg-tone";
-import { dispatchEdgeBack } from "@/lib/edge-back-events";
+import { dispatchEdgeBack, probeEdgeBackLayer } from "@/lib/edge-back-events";
 import { startDiaryEntryTimerService, stopDiaryEntryTimerService } from "@/lib/diary-entry-timer-service";
 import { startFollowUpService, stopFollowUpService } from "@/lib/follow-up-service";
 import { startMomentsService, stopMomentsService } from "@/lib/moments-engine";
@@ -1184,7 +1184,9 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
     locked: boolean;
     /** 最近一次跟手的横向位移：松手时据此判定提交返回还是弹回 */
     lastDx: number;
-  }>({ startX: 0, startY: 0, activeId: null, locked: false, lastDx: 0 });
+    /** 本次手势要推走的那一层：探询得来（APP 内的上层），null = 兜底滑整个工作区 */
+    layer: HTMLElement | null;
+  }>({ startX: 0, startY: 0, activeId: null, locked: false, lastDx: 0, layer: null });
 
   // ── Edit mode (long-press drag) ──
   const [editMode, setEditMode] = useState(false);
@@ -3714,17 +3716,27 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     const shell = shellRef.current;
     if (!shell) return;
 
+    /** 当前要推走的那一层：探询到的 APP 内上层，或兜底的整个工作区 */
+    const targetLayer = (): HTMLElement | null =>
+      edgeBackRef.current.layer ?? shell.querySelector<HTMLElement>(".phone-workspace");
+
     const clearFeedback = () => {
+      const el = targetLayer();
+      if (el) {
+        delete el.dataset.edgeBackLayer;
+        delete el.dataset.edgeBackSettling;
+        el.style.removeProperty("--edge-back-progress");
+      }
       delete shell.dataset.edgeBack;
-      shell.style.removeProperty("--edge-back-progress");
     };
 
     const reset = () => {
+      clearFeedback();
       const s = edgeBackRef.current;
       s.activeId = null;
       s.locked = false;
       s.lastDx = 0;
-      clearFeedback();
+      s.layer = null;
     };
 
     /** 起手：只认落在左缘判定区内的那一下 */
@@ -3738,6 +3750,10 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       s.activeId = id;
       s.locked = false;
       s.lastDx = 0;
+      // 起手时就问清楚该推走哪一层：APP 内有上层（如聊天室）就只推那一层，
+      // 它底下已挂载的上一层（会话列表）便自然露出；无人认领则兜底推整个
+      // 工作区（底下是壁纸，语义即"退出 APP 回桌面"）。
+      s.layer = probeEdgeBackLayer();
     };
 
     /**
@@ -3769,6 +3785,8 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       }
 
       s.lastDx = dx;
+      const el = targetLayer();
+      if (!el) return true;
       if (dx <= 0) {
         clearFeedback();
         return true;
@@ -3776,8 +3794,9 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 跟手：进度 = 位移 / 屏宽，1:1 跟随手指（可停顿、可往回拖）。
       // 移动中绝不触发返回，到底也不触发——一律等松手裁决。
       shell.dataset.edgeBack = "1";
+      el.dataset.edgeBackLayer = "1";
       const width = shell.getBoundingClientRect().width || 1;
-      shell.style.setProperty("--edge-back-progress", String(Math.min(dx / width, 1)));
+      el.style.setProperty("--edge-back-progress", String(Math.min(dx / width, 1)));
       return true;
     };
 
@@ -3788,10 +3807,11 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 先取出判定所需的量，再清理状态（reset 会把它们归零）
       const wasLocked = s.locked;
       const finalDx = s.lastDx;
+      const el = targetLayer();
       s.activeId = null;
       s.locked = false;
       s.lastDx = 0;
-      if (!wasLocked) {
+      if (!wasLocked || !el) {
         reset();
         return;
       }
@@ -3799,17 +3819,21 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 按比例而非固定像素，各种屏宽手感一致。
       const width = shell.getBoundingClientRect().width || 1;
       const commit = finalDx / width > EDGE_BACK_COMMIT_RATIO;
-      shell.dataset.edgeBackSettling = "1";
-      shell.style.setProperty("--edge-back-progress", commit ? "1" : "0");
+      el.dataset.edgeBackSettling = "1";
+      el.style.setProperty("--edge-back-progress", commit ? "1" : "0");
       window.setTimeout(() => {
         if (commit) {
-          // 已经滑到屏幕外了才切换，看起来就是"这一层被推走、露出上一层"
+          // 这一层已经滑出屏幕外了才真正切换状态，观感就是"它被推走、露出上一层"
           // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
           // 没人认领才关掉整个 APP 回桌面。
           if (!dispatchEdgeBack()) setActiveApp(null);
         }
-        delete shell.dataset.edgeBackSettling;
-        clearFeedback();
+        // 位移必须在状态切换后再清：先清会让这一层瞬间弹回原位闪一下
+        delete el.dataset.edgeBackSettling;
+        delete el.dataset.edgeBackLayer;
+        el.style.removeProperty("--edge-back-progress");
+        delete shell.dataset.edgeBack;
+        edgeBackRef.current.layer = null;
       }, EDGE_BACK_SETTLE_MS);
       if (commit) {
         try { navigator.vibrate?.(10); } catch { /* 不支持振动就算了 */ }

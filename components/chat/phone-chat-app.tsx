@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useState, useEffect, useRef } from "react";
-import { subscribeEdgeBack } from "@/lib/edge-back-events";
+import { subscribeEdgeBack, subscribeEdgeBackProbe } from "@/lib/edge-back-events";
 import { ChatMessageList } from "./chat-message-list";
 import { ChatContactsList } from "./chat-contacts-list";
 import { MomentsFeed } from "./moments-feed";
@@ -41,6 +41,9 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
     const [visitedSessions, setVisitedSessions] = useState<Map<string, ChatSession>>(new Map());
     const [dbReady, setDbReady] = useState(false);
     const [hideTabBar, setHideTabBar] = useState(false);
+    // 侧滑返回要推走的层：当前可见的聊天室节点（供壳探询，见 subscribeEdgeBackProbe）
+    const activeRoomLayerRef = useRef<HTMLElement | null>(null);
+    const mascotRoomLayerRef = useRef<HTMLElement | null>(null);
 
     // Hydrate IndexedDB → in-memory caches on mount
     useEffect(() => {
@@ -241,6 +244,16 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
         return false;
     }), [activeMascot, activeSession, activeTab]);
 
+    // 探询：告诉壳这次该推走哪一层。判断顺序必须与上面的回退顺序一致。
+    // 聊天室是绝对定位覆盖在列表之上、且列表本来就挂载着，所以只推聊天室这一层，
+    // 底下的会话列表会自然露出——这才是侧滑返回该有的观感。
+    // 切 tab 那一级返回没有"上一层"可露（同一容器内换内容），交给壳兜底即可。
+    useEffect(() => subscribeEdgeBackProbe(() => {
+        if (activeMascot) return mascotRoomLayerRef.current;
+        if (activeSession) return activeRoomLayerRef.current;
+        return null;
+    }), [activeMascot, activeSession]);
+
     if (!dbReady) return null;
 
     return (
@@ -310,7 +323,12 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
 
             {/* Chat Rooms — all visited sessions stay mounted, only active one is visible */}
             {[...visitedSessions.values()].map(sess => (
-                <div key={sess.id} style={{ display: activeSession?.id === sess.id ? undefined : 'none' }} className="chat-room-layer absolute inset-0">
+                <div
+                    key={sess.id}
+                    ref={el => { if (activeSession?.id === sess.id) activeRoomLayerRef.current = el; }}
+                    style={{ display: activeSession?.id === sess.id ? undefined : 'none' }}
+                    className="chat-room-layer absolute inset-0"
+                >
                     <ChatRoom
                         session={sess}
                         onBack={() => setActiveSession(null)}
@@ -327,7 +345,7 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
                 </div>
             ))}
             {activeMascot && (
-                <div className="chat-room-layer absolute inset-0">
+                <div className="chat-room-layer absolute inset-0" ref={mascotRoomLayerRef}>
                     <MascotChatRoom
                         onBack={() => setActiveMascot(false)}
                         onDeleted={() => setActiveMascot(false)}
