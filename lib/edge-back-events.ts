@@ -8,10 +8,10 @@
  *
  * 两套协议：
  *
- * 1) 探询（PROBE）——手势起手时问："现在返回的话，该滑走哪个元素？"
- *    谁在最上层谁把自己那一层的 DOM 节点报上来。壳只对这个节点做位移，
- *    于是它底下本来就挂载着的上一层会自然露出来（聊天室滑走 → 露出会话列表）。
- *    没人认领时壳兜底滑整个工作区（此时底下是壁纸，即"退出 APP 回桌面"）。
+ * 1) 探询（PROBE）——手势起手时问："现在返回的话，该怎么演？"
+ *    结果分三种（见 EdgeBackProbeDetail）：推走某一层、只淡出、推整页退出 APP。
+ *    最理想的是第一种：谁在最上层谁把自己那一层的 DOM 节点报上来，壳只对这个
+ *    节点做位移，它底下本来就挂载着的上一层便自然露出（聊天室滑走 → 露出会话列表）。
  *    ——不做探询、一律滑整个工作区的话，"上一层"也在工作区内部、会被一起推走，
  *    露出来的就只有壁纸，观感完全不是侧滑返回（曾经就是这个 bug）。
  *
@@ -30,8 +30,24 @@ export type EdgeBackDetail = {
 };
 
 export type EdgeBackProbeDetail = {
-    /** 订阅方把"自己这一层"的 DOM 节点放进来；保持 null = 交给壳兜底滑整页 */
+    /** 订阅方把"自己这一层"的 DOM 节点放进来 */
     layer: HTMLElement | null;
+    /**
+     * 订阅方是否会自行处理这次返回。
+     * 与 layer 组合出三种情形，壳据此选不同的动效：
+     * - layer 有值：推走这一层，露出它底下已挂载的上一层（最理想）
+     * - layer 为 null 且 claimed=true：APP 内部靠切 state 换页、没有可推走的层
+     *   （如联系人→加好友页、切 tab），此时推整页会露出壁纸、观感割裂，
+     *   壳改用轻微淡出
+     * - layer 为 null 且 claimed=false：无人认领，语义是"退出 APP 回桌面"，
+     *   推整个工作区、露出壁纸才是对的
+     */
+    claimed: boolean;
+};
+
+export type EdgeBackProbeResult = {
+    layer: HTMLElement | null;
+    claimed: boolean;
 };
 
 /**
@@ -59,24 +75,36 @@ export function subscribeEdgeBack(handler: () => boolean): () => void {
 }
 
 /**
- * 探询"这次返回该滑走哪个元素"。
- * @returns 最上层的 DOM 节点；null = 无人认领，壳应滑整个工作区
+ * 探询"这次返回该滑走哪个元素、以及有没有人认领"。
+ * @returns layer = 要推走的层（null 表示没有可推走的层）；claimed = 是否有 APP 认领
  */
-export function probeEdgeBackLayer(): HTMLElement | null {
-    const detail: EdgeBackProbeDetail = { layer: null };
+export function probeEdgeBackLayer(): EdgeBackProbeResult {
+    const detail: EdgeBackProbeDetail = { layer: null, claimed: false };
     window.dispatchEvent(new CustomEvent<EdgeBackProbeDetail>(EDGE_BACK_PROBE_EVENT, { detail }));
-    return detail.layer;
+    return { layer: detail.layer, claimed: detail.claimed };
 }
 
 /**
- * 订阅探询。provider 返回自己那一层的节点，或 null 表示"这次不该我滑"。
- * 与 subscribeEdgeBack 的层级判断应保持一致：能退一层的那一层，就是要滑走的那一层。
+ * 订阅探询。provider 返回：
+ * - HTMLElement：推走这一层（它底下已挂载的上一层会露出来）
+ * - "claimed"：我会处理这次返回，但没有可推走的层（同容器切 state 换页），
+ *   壳会改用淡出动效，避免露出壁纸
+ * - null：这次不该我管
+ * 判断顺序须与 subscribeEdgeBack 保持一致：能退一层的那一层，就是要滑走的那一层。
  */
-export function subscribeEdgeBackProbe(provider: () => HTMLElement | null): () => void {
+export function subscribeEdgeBackProbe(
+    provider: () => HTMLElement | "claimed" | null,
+): () => void {
     const listener = (event: Event) => {
         const detail = (event as CustomEvent<EdgeBackProbeDetail>).detail;
-        if (!detail || detail.layer) return;
-        detail.layer = provider();
+        if (!detail || detail.layer || detail.claimed) return;
+        const result = provider();
+        if (result === "claimed") {
+            detail.claimed = true;
+        } else if (result) {
+            detail.layer = result;
+            detail.claimed = true;
+        }
     };
     window.addEventListener(EDGE_BACK_PROBE_EVENT, listener);
     return () => window.removeEventListener(EDGE_BACK_PROBE_EVENT, listener);

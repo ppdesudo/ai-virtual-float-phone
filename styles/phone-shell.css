@@ -1008,23 +1008,40 @@
    露出来的只有壁纸，观感根本不是侧滑返回。
    --edge-back-progress 为 0~1 行程比例（= 手指位移 / 屏宽），JS 逐帧写入，
    所以位移 1:1 跟手，中途可停、可往回拖。 */
+/* data-edge-back-layer 的值就是动效模式，由 JS 起手探询后写入：
+   push / exit = 整页横向推走；fade = 淡出（没有可露出的上一层时用，
+   推整页会突然露出壁纸、观感割裂）。 */
 .phone-shell[data-edge-back] [data-edge-back-layer] {
-  transform: translate3d(calc(var(--edge-back-progress, 0) * 100%), 0, 0);
   /* 跟手阶段不能有过渡，否则位移滞后于手指、手感发黏 */
   transition: none;
+  will-change: transform, opacity;
+}
+.phone-shell[data-edge-back] [data-edge-back-layer="push"],
+.phone-shell[data-edge-back] [data-edge-back-layer="exit"] {
+  transform: translate3d(calc(var(--edge-back-progress, 0) * 100%), 0, 0);
   /* 滑走的那一层带右侧投影，和底下一层拉开层次（iOS 同款做法） */
   box-shadow: -14px 0 34px rgba(0, 0, 0, calc(0.26 * (1 - var(--edge-back-progress, 0))));
-  will-change: transform;
-  /* 被推走时露出下层，自身必须不透明，否则两层叠着看会串影 */
+}
+/* push 是"层叠着层"，被推走的这层必须不透明，否则两层串影 */
+.phone-shell[data-edge-back] [data-edge-back-layer="push"] {
   background: var(--c-app-bg, var(--c-panel, #fff));
+}
+/* fade：APP 内同容器切 state 换页，没有可推走的层。只做小幅位移 + 淡出，
+   不假装"露出上一层"，也就不会突然露出壁纸。 */
+.phone-shell[data-edge-back] [data-edge-back-layer="fade"] {
+  transform: translate3d(calc(var(--edge-back-progress, 0) * 26px), 0, 0);
+  opacity: calc(1 - var(--edge-back-progress, 0) * 0.42);
 }
 /* 松手阶段：补一段过渡，平滑滑到底或滑回原位（消除"半途瞬移"）。
    JS 在动画时长后清掉标记。 */
 .phone-shell[data-edge-back] [data-edge-back-layer][data-edge-back-settling] {
-  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1),
+              opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
-/* 兜底推整个工作区（= 退出 APP）时，壁纸要透出来当"底下一层" */
-.phone-shell[data-edge-back] .phone-wallpaper {
+/* 推整个工作区退出 APP 时，壁纸要透出来当"底下一层"。
+   fade 模式不掀壁纸——它退的是 APP 内部的页，壁纸不该露脸。 */
+.phone-shell[data-edge-back] [data-edge-back-layer="exit"] ~ .phone-wallpaper,
+.phone-shell[data-edge-back]:has([data-edge-back-layer="exit"]) .phone-wallpaper {
   opacity: 1 !important;
   transition-duration: 0s !important;
 }

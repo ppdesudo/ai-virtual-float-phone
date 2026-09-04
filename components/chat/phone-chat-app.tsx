@@ -251,8 +251,11 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
     useEffect(() => subscribeEdgeBackProbe(() => {
         if (activeMascot) return mascotRoomLayerRef.current;
         if (activeSession) return activeRoomLayerRef.current;
+        // 切 tab 这一级是同容器换内容，没有可推走的层：认领下来让壳走淡出，
+        // 否则推整页会突然露出壁纸（那是"退出 APP"的观感，语义不符）。
+        if (activeTab !== "messages") return "claimed";
         return null;
-    }), [activeMascot, activeSession]);
+    }), [activeMascot, activeSession, activeTab]);
 
     if (!dbReady) return null;
 
