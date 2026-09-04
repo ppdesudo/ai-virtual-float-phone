@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useState, useEffect, useRef } from "react";
+import { memo, useState, useEffect, useRef, useCallback } from "react";
 import { ChatMessageList } from "./chat-message-list";
 import { ChatContactsList } from "./chat-contacts-list";
 import { MomentsFeed } from "./moments-feed";
@@ -40,6 +40,61 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
     const [visitedSessions, setVisitedSessions] = useState<Map<string, ChatSession>>(new Map());
     const [dbReady, setDbReady] = useState(false);
     const [hideTabBar, setHideTabBar] = useState(false);
+
+    // ── Chat app edge swipe back: left-edge rightward swipe closes the active session or the app ──
+    const chatEdgeSwipeRef = useRef<{
+        startX: number;
+        startY: number;
+        pointerId: number | null;
+        locked: boolean;
+    }>({ startX: 0, startY: 0, pointerId: null, locked: false });
+
+    const CHAT_EDGE_ZONE = 18; // px from left edge
+    const CHAT_EDGE_THRESHOLD = 40; // minimum rightward travel to trigger
+
+    const goBack = useCallback(() => {
+        if (activeMascot) { setActiveMascot(false); return; }
+        if (activeSession) { setActiveSession(null); return; }
+        if (activeTab !== "messages") { setActiveTab("messages"); return; }
+        onClose();
+    }, [activeSession, activeMascot, activeTab, onClose]);
+
+    const handleChatEdgeStart = useCallback((e: React.PointerEvent) => {
+        if (e.clientX > CHAT_EDGE_ZONE) return;
+        const s = chatEdgeSwipeRef.current;
+        s.startX = e.clientX;
+        s.startY = e.clientY;
+        s.pointerId = e.pointerId;
+        s.locked = false;
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    }, []);
+
+    const handleChatEdgeMove = useCallback((e: React.PointerEvent) => {
+        const s = chatEdgeSwipeRef.current;
+        if (s.pointerId !== e.pointerId) return;
+        const dx = e.clientX - s.startX;
+        const dy = e.clientY - s.startY;
+        if (!s.locked) {
+            if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+                s.pointerId = null;
+                return;
+            }
+            if (Math.abs(dx) < 8) return;
+            s.locked = true;
+        }
+        if (dx > CHAT_EDGE_THRESHOLD) {
+            s.pointerId = null;
+            goBack();
+        }
+    }, [goBack]);
+
+    const handleChatEdgeEnd = useCallback((e: React.PointerEvent) => {
+        const s = chatEdgeSwipeRef.current;
+        if (s.pointerId === e.pointerId) {
+            s.pointerId = null;
+            s.locked = false;
+        }
+    }, []);
 
     // Hydrate IndexedDB → in-memory caches on mount
     useEffect(() => {
@@ -238,6 +293,10 @@ export const PhoneChatApp = memo(function PhoneChatApp({ onClose, initialSession
             className="chat-app absolute inset-0 flex flex-col overflow-hidden z-10"
             {...(activeSession || activeMascot ? { "data-room-active": "" } : {})}
             {...(hideTabBar ? { "data-tabbar-hidden": "" } : {})}
+            onPointerDown={handleChatEdgeStart}
+            onPointerMove={handleChatEdgeMove}
+            onPointerUp={handleChatEdgeEnd}
+            onPointerCancel={handleChatEdgeEnd}
         >
             {/* Chat app-level custom CSS (lower priority than per-session CSS) */}
             {chatAppCSS && <SessionCustomCSS css={chatAppCSS} scope=".chat-app" />}

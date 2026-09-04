@@ -1163,6 +1163,17 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
   }>({ startX: 0, startY: 0, deltaX: 0, locked: null, pointerId: null });
   const swipeLayerRef = useRef<HTMLDivElement | null>(null);
 
+  // ── App edge swipe back: left-edge rightward swipe closes the active app ──
+  const appEdgeSwipeRef = useRef<{
+    startX: number;
+    startY: number;
+    pointerId: number | null;
+    locked: boolean;
+  }>({ startX: 0, startY: 0, pointerId: null, locked: false });
+
+  const APP_EDGE_SWIPE_ZONE = 18; // px from left edge
+  const APP_EDGE_SWIPE_THRESHOLD = 40; // minimum rightward travel to trigger
+
   // ── Edit mode (long-press drag) ──
   const [editMode, setEditMode] = useState(false);
   const [showWidgetPicker, setShowWidgetPicker] = useState(false);
@@ -3679,8 +3690,75 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     swipeLayerRef.current?.style.setProperty("--swipe-drag", `${px}px`);
   }, []);
 
+  const handleAppEdgeSwipeStart = useCallback((e: React.PointerEvent) => {
+    if (!activeApp) return;
+    // Chat app handles its own edge swipe (sub-layer back) — don't double-handle
+    if (activeApp === "chat") return;
+    const x = e.clientX;
+    const y = e.clientY;
+    if (x > APP_EDGE_SWIPE_ZONE) return;
+    // Start edge-swipe tracking for closing the app
+    const s = appEdgeSwipeRef.current;
+    s.startX = x;
+    s.startY = y;
+    s.pointerId = e.pointerId;
+    s.locked = false;
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  }, [activeApp]);
+
+  const handleAppEdgeSwipeMove = useCallback((e: React.PointerEvent) => {
+    const s = appEdgeSwipeRef.current;
+    if (s.pointerId !== e.pointerId) return;
+    const dx = e.clientX - s.startX;
+    const dy = e.clientY - s.startY;
+    if (!s.locked) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
+        s.pointerId = null;
+        return;
+      }
+      if (Math.abs(dx) < 8) return;
+      s.locked = true;
+    }
+    const shell = shellRef.current;
+    if (dx > 0) {
+      const ratio = Math.min(dx / 150, 0.9);
+      if (shell) {
+        shell.dataset.appEdgeSwiping = "1";
+        shell.style.setProperty("--app-edge-swipe-opacity", String(ratio));
+      }
+    }
+    if (dx > APP_EDGE_SWIPE_THRESHOLD) {
+      if (shell) {
+        delete shell.dataset.appEdgeSwiping;
+        shell.style.removeProperty("--app-edge-swipe-opacity");
+      }
+      setActiveApp(null);
+      s.pointerId = null;
+    }
+  }, []);
+
+  const handleAppEdgeSwipeEnd = useCallback((e: React.PointerEvent) => {
+    const s = appEdgeSwipeRef.current;
+    if (s.pointerId === e.pointerId) {
+      // Reset visual feedback
+      const shell = shellRef.current;
+      if (shell) {
+        delete shell.dataset.appEdgeSwiping;
+        shell.style.removeProperty("--app-edge-swipe-opacity");
+      }
+      s.pointerId = null;
+      s.locked = false;
+    }
+  }, []);
+
   const handleSwipeStart = useCallback((e: React.PointerEvent) => {
-    if (activeApp) return;
+    if (activeApp) {
+      // APP 打开时：桌面翻页手势停用，只保留左缘的滑动返回
+      if (e.clientX <= APP_EDGE_SWIPE_ZONE) {
+        handleAppEdgeSwipeStart(e);
+      }
+      return;
+    }
     if (editMode && editDragRef.current) return;
     // Track tap on empty for "exit edit" detection
     if (editMode) {
@@ -3695,7 +3773,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     s.pointerId = e.pointerId;
     // Suppress the settle transition for 1:1 finger tracking while dragging.
     swipeLayerRef.current?.classList.add("phone-swipe-dragging");
-  }, [activeApp, editMode]);
+  }, [activeApp, editMode, handleAppEdgeSwipeStart]);
 
   // ── 状态栏颜色自适应：检测当前背景亮度 ──
   useEffect(() => {
@@ -3737,6 +3815,15 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   ]);
 
   const handleSwipeMove = useCallback((e: React.PointerEvent) => {
+    // ── APP 内：只处理左缘滑动返回，不参与桌面翻页 ──
+    if (activeApp) {
+      const es = appEdgeSwipeRef.current;
+      if (es.pointerId !== null && es.pointerId === e.pointerId) {
+        handleAppEdgeSwipeMove(e);
+      }
+      return;
+    }
+
     // ── Long-press cancellation ──
     const lp = longPressRef.current;
     if (lp && lp.pointerId === e.pointerId) {
@@ -3805,13 +3892,22 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
 
     s.deltaX = dx;
     setSwipeDrag(translateX + page * pageWidth);
-  }, [editMode, getSwipePageWidth, pageCount, setSwipeDrag]);
+  }, [activeApp, editMode, getSwipePageWidth, handleAppEdgeSwipeMove, pageCount, setSwipeDrag]);
 
   const handleSwipeEnd = useCallback((e: React.PointerEvent) => {
     // Clear long-press
     cancelLongPress();
     // Pointer is up → never keep the transition suppressed, whatever branch we take.
     swipeLayerRef.current?.classList.remove("phone-swipe-dragging");
+
+    // ── App edge swipe end ──
+    if (activeApp) {
+      const es = appEdgeSwipeRef.current;
+      if (es.pointerId !== null && es.pointerId === e.pointerId) {
+        handleAppEdgeSwipeEnd(e);
+      }
+      return;
+    }
 
     // ── Edit mode drag end ──
     const drag = editDragRef.current;
@@ -3855,7 +3951,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
     swipeLayerRef.current?.classList.remove("phone-swipe-dragging");
     setSwipeDrag(0);
     if (targetPageIndex !== page) setCurrentPageIndex(targetPageIndex);
-  }, [editMode, getSwipePageWidth, pageCount, setSwipeDrag]);
+  }, [activeApp, editMode, getSwipePageWidth, handleAppEdgeSwipeEnd, pageCount, setSwipeDrag]);
 
   const handleCloseXiaohongshu = useCallback((isBusy?: boolean) => {
     const shouldKeepMounted = isBusy ?? xiaohongshuBusy;
