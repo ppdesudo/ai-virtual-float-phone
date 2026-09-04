@@ -163,8 +163,9 @@ const EDGE_BACK_ZONE = 24;
 // 锁定为返回手势所需的最小横向位移（小于此值当点击处理，不劫持交互）。
 const EDGE_BACK_THRESHOLD = 12;
 // 松手裁决线：横向滑过屏宽的这个比例就提交返回，否则滑回原位。
-// 用比例而非固定像素，宽屏窄屏手感一致（iOS 大致在三分之一处）。
-const EDGE_BACK_COMMIT_RATIO = 0.32;
+// 用比例而非固定像素，宽屏窄屏手感一致。0.2 = 滑过屏宽 1/5 即返回，
+// 比 iOS 的 1/3 更灵敏（用户反馈 0.32 太钝，要滑到 1/6 才返回）。
+const EDGE_BACK_COMMIT_RATIO = 0.2;
 // 松手后滑到底/滑回原位的动画时长，需与 CSS 里 settling 的过渡时长一致。
 const EDGE_BACK_SETTLE_MS = 220;
 // 退出 APP 那一档单独用更短的时长：桌面（图标/dock）只在 activeApp 为空时才渲染，

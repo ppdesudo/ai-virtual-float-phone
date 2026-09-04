@@ -997,6 +997,13 @@
   transition-duration: 0s !important;
   /* hide instantly so it doesn't bleed through transparent app during fade-in */
 }
+/* 侧滑返回时：APP 往右移，底下露出的应是壁纸（iOS 同款，桌面图标在
+   APP 完全关闭后才淡入）。app-open 时壁纸被隐藏了，这里在滑动期间把它
+   重新显示出来，否则露出的是一片白底。 */
+.phone-shell[data-edge-back] .phone-wallpaper {
+  opacity: 1 !important;
+  transition-duration: 0s !important;
+}
 
 /* ── 侧边滑动返回：跟手反馈 ──
    --edge-back-progress 为 0~1 行程比例（= 手指位移 / 屏宽），JS 逐帧写入，
