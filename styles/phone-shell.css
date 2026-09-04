@@ -1018,10 +1018,16 @@
   /* 被推走时露出下层，自身必须不透明，否则两层叠着看会串影 */
   background: var(--c-app-bg, var(--c-panel, #fff));
 }
-/* exit（退出 APP）与 fade（APP 内切 state 换页）不在这里出现：
-   它们底下没有"已挂载的下一层"可露，任何跟手位移都只会把壁纸/空容器亮出来
-   （用户反馈的"一片蓝，看不到应用"）。这两档由 JS 在松手时直接切状态、零动画，
-   与左上角返回按钮的行为完全一致。 */
+/* exit（退出 APP）与 fade（APP 内切 state 换页）：没有"已挂载的下一层"可露，
+   所以不做整页推走，而是 APP 内缩+右移+淡出（像真实手机 APP 关闭的过渡），
+   壁纸从后面透出来当"桌面"。进度由 --edge-back-exit-progress 驱动（JS 写入）。 */
+.phone-shell[data-edge-back] [data-edge-back-layer="exit"],
+.phone-shell[data-edge-back] [data-edge-back-layer="fade"] {
+  transform: translate3d(calc(var(--edge-back-exit-progress, 0) * 30px), 0, 0)
+             scale(calc(1 - var(--edge-back-exit-progress, 0) * 0.15));
+  opacity: calc(1 - var(--edge-back-exit-progress, 0) * 0.6);
+  transform-origin: center center;
+}
 /* 松手阶段：补一段过渡，平滑滑到底或滑回原位（消除"半途瞬移"）。
    JS 在动画时长后清掉标记。 */
 .phone-shell[data-edge-back] [data-edge-back-layer][data-edge-back-settling] {
