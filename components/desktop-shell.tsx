@@ -3842,21 +3842,39 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 按比例而非固定像素，各种屏宽手感一致。
       const width = shell.getBoundingClientRect().width || 1;
       const commit = finalDx / width > EDGE_BACK_COMMIT_RATIO;
-      // ── 全部三档统一用 settling 过渡 ──
-      // push：推走到屏幕外（100%），露出底下已挂载的上一层。
-      // exit：APP 内缩+淡出（scale 0.85），壁纸透出来，200ms 过渡期间桌面已渲染好。
-      // fade：APP 淡出（opacity 0），同容器切状态。
-      // 三档都在过渡期间切 state，过渡结束后 APP 已不可见、桌面/下一 tab 已就位，
-      // 观感就是"APP 退回去了、下一层浮入"，和真实手机一致。
+      // ── 分档处理 ──
+      // push：推走到屏幕外（100%），露出底下已挂载的上一层。先播过渡、
+      //       等过渡结束再切 state（此时上一层已就位，无空窗）。
+      // exit / fade：底下没有已挂载的下一层（桌面要等 activeApp 清空才渲染，
+      //       APP 内切 tab 是同容器换内容）。若先播过渡再切 state，过渡期间
+      //       APP 缩完、壁纸被隐藏、桌面还没渲染——露出白底（用户反馈"停顿白屏"）。
+      //       所以这两档必须松手立即切 state，桌面这一刻渲染，再带淡入浮现。
       if (commit && s.mode === "push") {
         el.dataset.edgeBackSettling = "1";
         el.style.setProperty("--edge-back-progress", "1");
-      } else if (commit && s.mode === "exit") {
-        el.dataset.edgeBackSettling = "1";
-        el.style.setProperty("--edge-back-exit-progress", "1");
-      } else if (commit && s.mode === "fade") {
-        el.dataset.edgeBackSettling = "1";
-        el.style.setProperty("--edge-back-exit-progress", "1");
+        window.setTimeout(() => {
+          if (!dispatchEdgeBack()) setActiveApp(null);
+          delete el.dataset.edgeBackSettling;
+          delete el.dataset.edgeBackLayer;
+          el.style.removeProperty("--edge-back-progress");
+          delete shell.dataset.edgeBack;
+          edgeBackRef.current.layer = null;
+          edgeBackRef.current.mode = "exit";
+        }, EDGE_BACK_SETTLE_MS);
+      } else if (commit) {
+        // exit / fade：立即切 state，桌面/下一 tab 这一刻渲染
+        clearFeedback();
+        s.layer = null;
+        s.mode = "exit";
+        if (!dispatchEdgeBack()) {
+          setActiveApp(null);
+          // 桌面这一帧才渲染，给它一个淡入入场，避免"啪"地硬切
+          const ws = shell.querySelector<HTMLElement>(".phone-workspace");
+          if (ws) {
+            ws.dataset.desktopEntering = "1";
+            window.setTimeout(() => { delete ws.dataset.desktopEntering; }, 240);
+          }
+        }
       } else {
         // 没过阈值：弹回原位
         if (s.mode === "push") {
@@ -3866,23 +3884,16 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
           el.dataset.edgeBackSettling = "1";
           el.style.setProperty("--edge-back-exit-progress", "0");
         }
+        window.setTimeout(() => {
+          delete el.dataset.edgeBackSettling;
+          delete el.dataset.edgeBackLayer;
+          el.style.removeProperty("--edge-back-progress");
+          el.style.removeProperty("--edge-back-exit-progress");
+          delete shell.dataset.edgeBack;
+          edgeBackRef.current.layer = null;
+          edgeBackRef.current.mode = "exit";
+        }, EDGE_BACK_SETTLE_MS);
       }
-      const settleMs = EDGE_BACK_SETTLE_MS;
-      window.setTimeout(() => {
-        if (commit) {
-          // 所有档都在同一帧切 state：过渡期间 APP 还在（不可见了），
-          // 过渡结束后桌面/下一 tab 已就位。同一帧切不会闪。
-          if (!dispatchEdgeBack()) setActiveApp(null);
-        }
-        // 清理所有过渡状态
-        delete el.dataset.edgeBackSettling;
-        delete el.dataset.edgeBackLayer;
-        el.style.removeProperty("--edge-back-progress");
-        el.style.removeProperty("--edge-back-exit-progress");
-        delete shell.dataset.edgeBack;
-        edgeBackRef.current.layer = null;
-        edgeBackRef.current.mode = "exit";
-      }, settleMs);
       if (commit) {
         try { navigator.vibrate?.(10); } catch { /* 不支持振动就算了 */ }
       }

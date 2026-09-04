@@ -1034,6 +1034,16 @@
   transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1),
               opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
+/* 退出 APP 后桌面（图标/dock）这一帧才开始渲染，给它一个淡入入场，
+   避免"啪"地硬切。JS 在动画时长后清掉标记（见 desktop-shell 的 desktopEntering）。
+   只动 opacity，不缩放：桌面长按拖拽按屏幕坐标算命中，缩放会让落点算错。 */
+.phone-workspace[data-desktop-entering] {
+  animation: desktop-enter 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes desktop-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 
 
 /* ── Notice toast ── */
