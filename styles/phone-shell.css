@@ -999,20 +999,24 @@
 }
 
 /* ── 侧边滑动返回：跟手反馈 ──
-   从屏幕左缘右滑时，当前 APP 内容随手指淡出并右移、壁纸透出；
-   到阈值后 JS 提交返回（松手未达阈值则属性移除、原样恢复）。 */
+   仿 iOS/微信：当前这一层整页跟着手指横向滑走、露出底下一层。
+   --edge-back-progress 为 0~1 的行程比例（= 手指位移 / 屏宽），由 JS 逐帧写入，
+   所以位移是 1:1 跟手的，中途可以停、可以往回拖。松手后由 JS 补 settling 过渡
+   决定滑到底（提交返回）还是滑回去（放弃）。 */
 .phone-shell[data-edge-back] .phone-workspace {
-  /* 跟手阶段：淡出 + 右移，1:1 跟随手指，不加过渡 */
-  opacity: calc(1 - var(--edge-back-progress, 0) * 0.65);
-  transform: translate3d(calc(var(--edge-back-progress, 0) * 88px), 0, 0);
+  transform: translate3d(calc(var(--edge-back-progress, 0) * 100%), 0, 0);
+  /* 跟手阶段不能有过渡，否则位移滞后于手指、手感发黏 */
   transition: none;
+  /* 滑走的那一层带右侧投影，和底下一层拉开层次（iOS 同款做法） */
+  box-shadow: -14px 0 34px rgba(0, 0, 0, calc(0.26 * (1 - var(--edge-back-progress, 0))));
+  will-change: transform;
 }
-/* 松手阶段（settling）：无论提交返回还是弹回原位，都补一段过渡，
-   避免"半途瞬移"。JS 在动画时长后清理这两个属性。 */
+/* 松手阶段：补一段过渡，让它平滑滑到底或滑回原位（消除"半途瞬移"）。
+   JS 在动画时长后清掉这两个标记。 */
 .phone-shell[data-edge-back][data-edge-back-settling] .phone-workspace {
-  transition: transform 0.19s cubic-bezier(0.22, 1, 0.36, 1),
-              opacity 0.19s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
 }
+/* 滑动期间壁纸要透出来当"底下一层"，否则右移后是一片空白 */
 .phone-shell[data-edge-back] .phone-wallpaper {
   opacity: 1 !important;
   transition-duration: 0s !important;

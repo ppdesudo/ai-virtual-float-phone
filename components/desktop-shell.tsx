@@ -160,10 +160,13 @@ const SWIPE_MIN_THRESHOLD = 60;
 // 起手判定区：屏幕左缘往里这么宽的一条，只有在这里按下才算返回手势，
 // 中间区域完全不受影响（不抢聊天列表左滑删除、图片横滑、横向滚动等）。
 const EDGE_BACK_ZONE = 24;
-// 触发阈值：横向要滑过这么多像素才真正返回，避免轻碰误退。
-const EDGE_BACK_THRESHOLD = 45;
-// 跟手淡出的行程：位移/该值 = 淡出比例（视觉反馈用，不影响触发判定）。
-const EDGE_BACK_FADE_TRAVEL = 160;
+// 锁定为返回手势所需的最小横向位移（小于此值当点击处理，不劫持交互）。
+const EDGE_BACK_THRESHOLD = 12;
+// 松手裁决线：横向滑过屏宽的这个比例就提交返回，否则滑回原位。
+// 用比例而非固定像素，宽屏窄屏手感一致（iOS 大致在三分之一处）。
+const EDGE_BACK_COMMIT_RATIO = 0.32;
+// 松手后滑到底/滑回原位的动画时长，需与 CSS 里 settling 的过渡时长一致。
+const EDGE_BACK_SETTLE_MS = 220;
 
 function parseColorAlpha(value: string): { hex: string; alpha: number } {
   const rgbaMatch = value.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
@@ -1179,10 +1182,9 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
     startY: number;
     activeId: number | null;
     locked: boolean;
-    fired: boolean;
     /** 最近一次跟手的横向位移：松手时据此判定提交返回还是弹回 */
     lastDx: number;
-  }>({ startX: 0, startY: 0, activeId: null, locked: false, fired: false, lastDx: 0 });
+  }>({ startX: 0, startY: 0, activeId: null, locked: false, lastDx: 0 });
 
   // ── Edit mode (long-press drag) ──
   const [editMode, setEditMode] = useState(false);
@@ -3721,7 +3723,6 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       const s = edgeBackRef.current;
       s.activeId = null;
       s.locked = false;
-      s.fired = false;
       s.lastDx = 0;
       clearFeedback();
     };
@@ -3736,19 +3737,19 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       s.startY = y;
       s.activeId = id;
       s.locked = false;
-      s.fired = false;
       s.lastDx = 0;
     };
 
     /**
      * 移动。返回 true = 已锁定为返回手势，调用方应 preventDefault()
      * 把这次触摸从浏览器的滚动手里抢下来（否则浏览器会发 touchcancel 掐断手势）。
-     * 注意：这里只跟手，绝不触发返回——返回要等松手才提交（见 end），
-     * 否则一滑过阈值就"咣"地返回，根本没法停顿观察（用户反馈）。
+     * 注意：这里只跟手，绝不触发返回——返回一律等松手才裁决（见 end）。
+     * 曾经在移动中一过阈值就当场返回，页面"咣"地切走，既不能停顿观察也没法反悔，
+     * 和微信/iOS 的侧滑返回完全不是一回事。
      */
     const move = (id: number, x: number, y: number): boolean => {
       const s = edgeBackRef.current;
-      if (s.activeId === null || s.activeId !== id || s.fired) return false;
+      if (s.activeId === null || s.activeId !== id) return false;
       const dx = x - s.startX;
       const dy = y - s.startY;
 
@@ -3758,7 +3759,7 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
           reset();
           return false;
         }
-        if (Math.abs(dx) < 8) return false;
+        if (Math.abs(dx) < EDGE_BACK_THRESHOLD) return false;
         // 左滑（dx<0）不是返回手势，让给列表左滑等既有交互
         if (dx < 0) {
           reset();
@@ -3772,9 +3773,11 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
         clearFeedback();
         return true;
       }
-      // 跟手淡出反馈：移动中只更新进度，到了阈值也先不触发
+      // 跟手：进度 = 位移 / 屏宽，1:1 跟随手指（可停顿、可往回拖）。
+      // 移动中绝不触发返回，到底也不触发——一律等松手裁决。
       shell.dataset.edgeBack = "1";
-      shell.style.setProperty("--edge-back-progress", String(Math.min(dx / EDGE_BACK_FADE_TRAVEL, 0.85)));
+      const width = shell.getBoundingClientRect().width || 1;
+      shell.style.setProperty("--edge-back-progress", String(Math.min(dx / width, 1)));
       return true;
     };
 
@@ -3785,38 +3788,32 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
       // 先取出判定所需的量，再清理状态（reset 会把它们归零）
       const wasLocked = s.locked;
       const finalDx = s.lastDx;
-      if (wasLocked && finalDx > EDGE_BACK_THRESHOLD) {
-        // 够阈值 → 提交返回。先让内容滑到底再切换，避免"半途瞬移"的割裂感
-        shell.dataset.edgeBack = "1";
-        shell.dataset.edgeBackSettling = "1";
-        shell.style.setProperty("--edge-back-progress", "1");
-        s.activeId = null;
-        s.locked = false;
-        s.lastDx = 0;
-        window.setTimeout(() => {
+      s.activeId = null;
+      s.locked = false;
+      s.lastDx = 0;
+      if (!wasLocked) {
+        reset();
+        return;
+      }
+      // 裁决：滑过屏宽的 EDGE_BACK_COMMIT_RATIO 就提交返回，否则滑回原位。
+      // 按比例而非固定像素，各种屏宽手感一致。
+      const width = shell.getBoundingClientRect().width || 1;
+      const commit = finalDx / width > EDGE_BACK_COMMIT_RATIO;
+      shell.dataset.edgeBackSettling = "1";
+      shell.style.setProperty("--edge-back-progress", commit ? "1" : "0");
+      window.setTimeout(() => {
+        if (commit) {
+          // 已经滑到屏幕外了才切换，看起来就是"这一层被推走、露出上一层"
           // 先问 APP 自己能不能退一层（如聊天：聊天室→列表→tab）；
           // 没人认领才关掉整个 APP 回桌面。
           if (!dispatchEdgeBack()) setActiveApp(null);
-          delete shell.dataset.edgeBackSettling;
-          clearFeedback();
-        }, 170);
-        try { navigator.vibrate?.(12); } catch { /* 不支持振动就算了 */ }
-        return;
+        }
+        delete shell.dataset.edgeBackSettling;
+        clearFeedback();
+      }, EDGE_BACK_SETTLE_MS);
+      if (commit) {
+        try { navigator.vibrate?.(10); } catch { /* 不支持振动就算了 */ }
       }
-      // 不够阈值 → 平滑弹回原位，页面留在当前层
-      if (wasLocked) {
-        shell.dataset.edgeBackSettling = "1";
-        shell.style.setProperty("--edge-back-progress", "0");
-        window.setTimeout(() => {
-          delete shell.dataset.edgeBackSettling;
-          clearFeedback();
-        }, 200);
-        s.activeId = null;
-        s.locked = false;
-        s.lastDx = 0;
-        return;
-      }
-      reset();
     };
 
     /** 触摸被浏览器接管（变滚动/被系统手势抢走）：只弹回，不提交返回 */
