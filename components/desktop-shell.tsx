@@ -1173,13 +1173,14 @@ export function DesktopShell({ initialThemeProfile, initialThemeAssets }: Deskto
   const swipeLayerRef = useRef<HTMLDivElement | null>(null);
 
   // ── 侧边滑动返回：手势状态（capture 阶段原生监听，见下方 useEffect）──
+  // activeId：触摸取 touch.identifier，鼠标取 pointerId；null = 当前没在跟踪手势
   const edgeBackRef = useRef<{
     startX: number;
     startY: number;
-    pointerId: number | null;
+    activeId: number | null;
     locked: boolean;
     fired: boolean;
-  }>({ startX: 0, startY: 0, pointerId: null, locked: false, fired: false });
+  }>({ startX: 0, startY: 0, activeId: null, locked: false, fired: false });
 
   // ── Edit mode (long-press drag) ──
   const [editMode, setEditMode] = useState(false);
@@ -3698,9 +3699,12 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
   }, []);
 
   // ── 全局侧边滑动返回 ──
-  // 必须用 capture 阶段的原生监听挂在壳节点上：APP 内容都在子树里，各 APP 自己的
-  // 滚动容器/手势处理常常 stopPropagation，靠冒泡（React onPointerDown）根本收不到
-  // 事件，手势会静默失效。capture 早于目标与冒泡执行，谁也拦不住。
+  // 两个约束共同决定了这里的写法，改动前务必读懂，否则会静默失效：
+  // 1) 必须挂在壳节点的 capture 阶段：APP 内容都在子树里，各 APP 自己的滚动容器
+  //    与手势处理普遍 stopPropagation，靠冒泡（React onPointerDown）收不到事件。
+  // 2) 必须用 touch 事件而非 pointer：浏览器判定触摸为滚动后会发 pointercancel
+  //    并停止派发 pointermove，手势被掐断；touchmove 配 passive:false 才能
+  //    preventDefault() 主动接管。
   // 只在 APP 打开时生效；桌面态的左右滑仍归翻页逻辑，互不干扰。
   useEffect(() => {
     const shell = shellRef.current;
@@ -3713,49 +3717,53 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
 
     const reset = () => {
       const s = edgeBackRef.current;
-      s.pointerId = null;
+      s.activeId = null;
       s.locked = false;
       s.fired = false;
       clearFeedback();
     };
 
-    const onDown = (e: PointerEvent) => {
+    /** 起手：只认落在左缘判定区内的那一下 */
+    const begin = (id: number, x: number, y: number) => {
       if (!activeAppRef.current) return;
-      // 起手必须落在左缘判定区内
       const rect = shell.getBoundingClientRect();
-      if (e.clientX - rect.left > EDGE_BACK_ZONE) return;
+      if (x - rect.left > EDGE_BACK_ZONE) return;
       const s = edgeBackRef.current;
-      s.startX = e.clientX;
-      s.startY = e.clientY;
-      s.pointerId = e.pointerId;
+      s.startX = x;
+      s.startY = y;
+      s.activeId = id;
       s.locked = false;
       s.fired = false;
     };
 
-    const onMove = (e: PointerEvent) => {
+    /**
+     * 移动。返回 true = 已锁定为返回手势，调用方应 preventDefault()
+     * 把这次触摸从浏览器的滚动手里抢下来（否则浏览器会发 touchcancel 掐断手势）。
+     */
+    const move = (id: number, x: number, y: number): boolean => {
       const s = edgeBackRef.current;
-      if (s.pointerId === null || s.pointerId !== e.pointerId || s.fired) return;
-      const dx = e.clientX - s.startX;
-      const dy = e.clientY - s.startY;
+      if (s.activeId === null || s.activeId !== id || s.fired) return false;
+      const dx = x - s.startX;
+      const dy = y - s.startY;
 
       if (!s.locked) {
         // 竖向意图（页面滚动）优先：直接放弃，绝不劫持滚动
         if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) {
           reset();
-          return;
+          return false;
         }
-        if (Math.abs(dx) < 8) return;
+        if (Math.abs(dx) < 8) return false;
         // 左滑（dx<0）不是返回手势，让给列表左滑等既有交互
         if (dx < 0) {
           reset();
-          return;
+          return false;
         }
         s.locked = true;
       }
 
       if (dx <= 0) {
         clearFeedback();
-        return;
+        return true;
       }
       // 跟手淡出反馈
       shell.dataset.edgeBack = "1";
@@ -3771,24 +3779,66 @@ html,body{margin:0;padding:0;width:100%;height:100%;background:#121110;color:rgb
         }
         try { navigator.vibrate?.(12); } catch { /* 不支持振动就算了 */ }
       }
+      return true;
     };
 
-    const onUp = (e: PointerEvent) => {
-      const s = edgeBackRef.current;
-      if (s.pointerId !== e.pointerId) return;
+    const end = (id: number) => {
+      if (edgeBackRef.current.activeId !== id) return;
       reset();
     };
 
-    // capture: true 是这套手势能全局生效的关键，勿改
-    shell.addEventListener("pointerdown", onDown, { capture: true });
-    shell.addEventListener("pointermove", onMove, { capture: true });
-    shell.addEventListener("pointerup", onUp, { capture: true });
-    shell.addEventListener("pointercancel", onUp, { capture: true });
+    // ── 触摸（手机主路径）──
+    // 用 touch 事件而非 pointer：浏览器一旦判定这次触摸是滚动，就会发 pointercancel
+    // 并停止派发 pointermove，手势被静默掐断（APP 内容几乎都在竖向滚动容器里，
+    // 这个掐断几乎必然发生）。touchmove 配 passive:false 才能 preventDefault()
+    // 主动接管这次触摸。
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      begin(t.identifier, t.clientX, t.clientY);
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const s = edgeBackRef.current;
+      if (s.activeId === null) return;
+      const t = Array.from(e.touches).find(touch => touch.identifier === s.activeId);
+      if (!t) return;
+      if (move(t.identifier, t.clientX, t.clientY) && e.cancelable) {
+        // 锁定为返回手势后接管触摸，阻止浏览器把它当滚动处理
+        e.preventDefault();
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const s = edgeBackRef.current;
+      if (s.activeId === null) return;
+      // 该 id 已不在 touches 里 = 这根手指抬起了
+      const stillDown = Array.from(e.touches).some(touch => touch.identifier === s.activeId);
+      if (!stillDown) end(s.activeId);
+    };
+
+    // ── 鼠标（桌面浏览器调试用）──
+    const onMouseDown = (e: MouseEvent) => begin(-1, e.clientX, e.clientY);
+    const onMouseMove = (e: MouseEvent) => { move(-1, e.clientX, e.clientY); };
+    const onMouseUp = () => end(-1);
+
+    // capture: true 是这套手势能全局生效的关键：APP 内部的 stopPropagation
+    // 只能拦冒泡，拦不掉 capture 阶段。passive: false 是 preventDefault 的前提。
+    shell.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
+    shell.addEventListener("touchmove", onTouchMove, { capture: true, passive: false });
+    shell.addEventListener("touchend", onTouchEnd, { capture: true, passive: true });
+    shell.addEventListener("touchcancel", onTouchEnd, { capture: true, passive: true });
+    shell.addEventListener("mousedown", onMouseDown, { capture: true });
+    shell.addEventListener("mousemove", onMouseMove, { capture: true });
+    shell.addEventListener("mouseup", onMouseUp, { capture: true });
     return () => {
-      shell.removeEventListener("pointerdown", onDown, { capture: true });
-      shell.removeEventListener("pointermove", onMove, { capture: true });
-      shell.removeEventListener("pointerup", onUp, { capture: true });
-      shell.removeEventListener("pointercancel", onUp, { capture: true });
+      shell.removeEventListener("touchstart", onTouchStart, { capture: true });
+      shell.removeEventListener("touchmove", onTouchMove, { capture: true });
+      shell.removeEventListener("touchend", onTouchEnd, { capture: true });
+      shell.removeEventListener("touchcancel", onTouchEnd, { capture: true });
+      shell.removeEventListener("mousedown", onMouseDown, { capture: true });
+      shell.removeEventListener("mousemove", onMouseMove, { capture: true });
+      shell.removeEventListener("mouseup", onMouseUp, { capture: true });
       clearFeedback();
     };
   }, []);
